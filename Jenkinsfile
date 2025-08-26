@@ -1,46 +1,74 @@
 pipeline {
     agent any 
-    environment {
-        DOCKERHUB_CREDENTIALS = credentials('testdock1')
+
+    options {
+        skipDefaultCheckout(true)   // prevent system-generated checkout
+        timestamps()                // add timestamps in logs
     }
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('testdock1')  
+        IMAGE_NAME = "nemunis/flask"
+        CONTAINER_NAME = "myapp-container"
+    }
+
     stages {
-        stage('Build docker image') {
-            steps {  
-                echo "Building Docker image..."
-                sh 'docker build -t nemunis/flask:$BUILD_NUMBER .'
+        stage('Checkout Code') {
+            steps {
+                echo "Checking out repository..."
+                checkout scm
             }
         }
-        stage('login to dockerhub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'testdock1', usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
-                    echo "Logging in to Docker Hub..."
-                    sh "docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_PASSWORD"
+
+        stage('Build Docker Image') {
+            steps {  
+                script {
+                    def start = System.currentTimeMillis()
+                    echo "Building Docker image..."
+                    sh "docker build -t $IMAGE_NAME:$BUILD_NUMBER ."
+                    def end = System.currentTimeMillis()
+                    echo "⏱ Docker build took $((end - start) / 1000) seconds"
                 }
             }
         }
-        stage('push image') {
+
+        stage('Login to DockerHub') {
             steps {
-                echo "Pushing Docker image to Docker Hub..."
-                sh 'docker push nemunis/flask:$BUILD_NUMBER'
+                withCredentials([usernamePassword(credentialsId: 'testdock1', usernameVariable: 'DOCKERHUB_USERNAME', passwordVariable: 'DOCKERHUB_PASSWORD')]) {
+                    echo "Logging in to Docker Hub..."
+                    sh "echo $DOCKERHUB_PASSWORD | docker login -u $DOCKERHUB_USERNAME --password-stdin"
+                }
             }
         }
+
+        stage('Push Image to DockerHub') {
+            steps {
+                script {
+                    def start = System.currentTimeMillis()
+                    echo "Pushing Docker image to Docker Hub..."
+                    sh "docker push $IMAGE_NAME:$BUILD_NUMBER"
+                    sh "docker tag $IMAGE_NAME:$BUILD_NUMBER $IMAGE_NAME:latest"
+                    sh "docker push $IMAGE_NAME:latest"
+                    def end = System.currentTimeMillis()
+                    echo "⏱ Docker push took $((end - start) / 1000) seconds"
+                }
+            }
+        }
+
         stage('Deploy to Staging') {
             steps {
-                // Pull the latest image from Docker Hub
-                sh 'docker pull nemunis/flask:$BUILD_NUMBER'
-
-                // Stop and remove any existing containers
-                sh 'docker stop myapp-container || true'
-                sh 'docker rm myapp-container || true'
-
-                // Run the new container with the latest image
-                sh 'docker run -d --name myapp-container -p 8000:8000 nemunis/flask:$BUILD_NUMBER'
+                echo "Deploying container on EC2..."
+                sh "docker pull $IMAGE_NAME:$BUILD_NUMBER"
+                sh "docker stop $CONTAINER_NAME || true"
+                sh "docker rm $CONTAINER_NAME || true"
+                sh "docker run -d --name $CONTAINER_NAME -p 8000:8000 $IMAGE_NAME:$BUILD_NUMBER"
             }
         }
     }
+
     post {
         always {
-            echo "Logging out from Docker Hub..."
+            echo "Cleaning up..."
             sh 'docker logout'
         }
     }
